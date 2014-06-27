@@ -25,3 +25,5 @@ go get github.com/onsi/etcd-flood
 cd $GOPATH/src/github.com/onsi/etcd-flood
 ginkgo -v
 ```
+
+The test suite will automatically download etcd binaries from Github (assumes OS X).  This will only happen the first time.
