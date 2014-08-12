@@ -22,6 +22,12 @@ type ETCDFlood struct {
 	running         bool
 }
 
+type FloodResult struct {
+	numWritten   int
+	numAttempted int
+	dt           time.Duration
+}
+
 func NewETCDFlood(messagesPerTick int, concurrency int, machines []string) *ETCDFlood {
 	return &ETCDFlood{
 		messagesPerTick: messagesPerTick,
@@ -32,9 +38,10 @@ func NewETCDFlood(messagesPerTick int, concurrency int, machines []string) *ETCD
 }
 
 func (f *ETCDFlood) Flood() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	f.running = true
 	go func() {
+		results := []FloodResult{}
 		for {
 			select {
 			case <-ticker.C:
@@ -61,17 +68,37 @@ func (f *ETCDFlood) Flood() {
 				wg.Wait()
 
 				nFailures := atomic.LoadUint64(&numFailures)
+				results = append(results, FloodResult{
+					numWritten:   f.messagesPerTick - int(nFailures),
+					numAttempted: f.messagesPerTick,
+					dt:           time.Since(t),
+				})
 				if nFailures > 0 {
-					RedBanner(fmt.Sprintf("Failed to write %d of %d keys%s", numFailures, f.messagesPerTick, defaultStyle))
+					RedBanner(fmt.Sprintf("Failed to write %d of %d keys (took %s)", nFailures, f.messagesPerTick, time.Since(t)))
 				} else {
-					GreenBanner(fmt.Sprintf("Wrote all %d keys!", f.messagesPerTick))
+					GreenBanner(fmt.Sprintf("Wrote all %d keys! (took %s)", f.messagesPerTick, time.Since(t)))
 				}
-				fmt.Printf("...done in %s\n", time.Since(t))
 			case reply := <-f.stop:
-				fmt.Println("Stopping flood...")
+				fmt.Println(greenColor + "Summary:" + defaultStyle)
+				totalAttempted := 0
+				totalWritten := 0
+				totalTime := time.Duration(0)
+				for _, result := range results {
+					fmt.Printf("  Wrote %d/%d in %s\n", result.numWritten, result.numAttempted, result.dt)
+					totalAttempted += result.numAttempted
+					totalWritten += result.numWritten
+					totalTime += result.dt
+				}
+
+				fmt.Println(greenColor + "Totals:" + defaultStyle)
+				fmt.Printf("  %d/%d in %s\n", totalWritten, totalAttempted, totalTime)
+				fmt.Printf("  ~%.2f succesful writes/second\n", float64(totalWritten)/totalTime.Seconds())
+
+				fmt.Println(redColor + "Stopping flood..." + defaultStyle)
 				ticker.Stop()
 				reply <- struct{}{}
-				fmt.Println("...stopped")
+				fmt.Println(redColor + "...stopped" + defaultStyle)
+
 				return
 			}
 		}

@@ -2,12 +2,14 @@ package etcd_flood_test
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
 	"github.com/coreos/go-etcd/etcd"
 	. "github.com/onsi/etcd-flood"
 	. "github.com/onsi/ginkgo"
@@ -20,11 +22,22 @@ import (
 )
 
 const V3 = "v0.3"
-const V44 = "v0.4.4"
+const V46 = "v0.4.6"
+const VBETA = "vbeta"
 const DATA_DIR = "./data-dir"
 
 var toShutDown []*gexec.Session
 var flood *ETCDFlood
+
+var VERSION string
+var NUM_KEYS int
+var CONCURRENCY int
+
+func init() {
+	flag.StringVar(&VERSION, "version", V46, "version to test: v0.3, v0.4.6, vbeta")
+	flag.IntVar(&NUM_KEYS, "numKeys", 1000, "number of keys to write per batch")
+	flag.IntVar(&CONCURRENCY, "concurrency", 50, "number of concurrent requests")
+}
 
 func TestEtcdFlood(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -34,7 +47,7 @@ func TestEtcdFlood(t *testing.T) {
 var _ = BeforeSuite(func() {
 	err := os.MkdirAll(DATA_DIR, 0700)
 	Ω(err).ShouldNot(HaveOccurred())
-	for _, version := range []string{V3, V44} {
+	for _, version := range []string{V3, V46, VBETA} {
 		dir, err := filepath.Abs(filepath.Join("etcd", version))
 		Ω(err).ShouldNot(HaveOccurred())
 
