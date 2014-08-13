@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-etcd/etcd"
@@ -13,103 +12,156 @@ import (
 const defaultStyle = "\x1b[0m"
 const redColor = "\x1b[91m"
 const greenColor = "\x1b[32m"
+const yellowColor = "\x1b[33m"
+const cyanColor = "\x1b[36m"
 
 type ETCDFlood struct {
-	messagesPerTick int
-	client          *etcd.Client
-	semaphore       chan struct{}
-	stop            chan chan struct{}
-	running         bool
+	storeSize   int
+	concurrency int
+	machines    []string
+	stop        chan chan struct{}
+	running     bool
 }
 
 type FloodResult struct {
-	numWritten   int
-	numAttempted int
-	dt           time.Duration
+	success bool
+	dt      time.Duration
 }
 
-func NewETCDFlood(messagesPerTick int, concurrency int, machines []string) *ETCDFlood {
+func NewETCDFlood(storeSize int, concurrency int, machines []string) *ETCDFlood {
 	return &ETCDFlood{
-		messagesPerTick: messagesPerTick,
-		client:          etcd.NewClient(machines),
-		semaphore:       make(chan struct{}, concurrency),
-		stop:            make(chan chan struct{}, 0),
+		storeSize:   storeSize,
+		concurrency: concurrency,
+		machines:    machines,
+		stop:        make(chan chan struct{}, 0),
 	}
 }
 
 func (f *ETCDFlood) Flood() {
-	ticker := time.NewTicker(10 * time.Millisecond)
 	f.running = true
+
+	wg := &sync.WaitGroup{}
+	wg.Add(f.concurrency)
+
+	stop := make(chan struct{})
+	inputStream := make(chan int)
+
+	resultChan := make(chan FloodResult)
+	printReport := make(chan chan struct{}, 0)
+
+	//stopper
+	go func() {
+		reply := <-f.stop
+		close(stop)
+		wg.Wait()
+		printReport <- reply
+	}()
+
+	//result aggregator
 	go func() {
 		results := []FloodResult{}
+		nSuccess := 0
+		nAttempted := 0
+		lastCount := 0
+		t := time.Now()
 		for {
 			select {
-			case <-ticker.C:
-				t := time.Now()
-
-				fmt.Printf("Writing %d entries...\n", f.messagesPerTick)
-
-				wg := &sync.WaitGroup{}
-				wg.Add(f.messagesPerTick)
-				numFailures := uint64(0)
-
-				for i := 0; i < f.messagesPerTick; i++ {
-					go func(i int) {
-						f.semaphore <- struct{}{}
-						_, err := f.client.Set(fmt.Sprintf("/flood/key-%d", i), "some-value", 0)
-						if err != nil {
-							atomic.AddUint64(&numFailures, 1)
-						}
-						<-f.semaphore
-						wg.Done()
-					}(i)
+			case result := <-resultChan:
+				if result.success {
+					nSuccess += 1
 				}
-
-				wg.Wait()
-
-				nFailures := atomic.LoadUint64(&numFailures)
-				results = append(results, FloodResult{
-					numWritten:   f.messagesPerTick - int(nFailures),
-					numAttempted: f.messagesPerTick,
-					dt:           time.Since(t),
-				})
-				if nFailures > 0 {
-					RedBanner(fmt.Sprintf("Failed to write %d of %d keys (took %s)", nFailures, f.messagesPerTick, time.Since(t)))
-				} else {
-					GreenBanner(fmt.Sprintf("Wrote all %d keys! (took %s)", f.messagesPerTick, time.Since(t)))
+				nAttempted += 1
+				if nAttempted%1000 == 0 {
+					delta := nSuccess - lastCount
+					update := fmt.Sprintf("Wrote %d/%d in %s (∆=%d/1000)", nSuccess, nAttempted, time.Since(t), nSuccess-lastCount)
+					if delta == 1000 {
+						fmt.Println(greenColor + update + defaultStyle)
+					} else {
+						fmt.Println(redColor + update + defaultStyle)
+					}
+					lastCount = nSuccess
 				}
-			case reply := <-f.stop:
-				fmt.Println(greenColor + "Summary:" + defaultStyle)
-				totalAttempted := 0
-				totalWritten := 0
-				totalTime := time.Duration(0)
-				for _, result := range results {
-					fmt.Printf("  Wrote %d/%d in %s\n", result.numWritten, result.numAttempted, result.dt)
-					totalAttempted += result.numAttempted
-					totalWritten += result.numWritten
-					totalTime += result.dt
-				}
-
-				fmt.Println(greenColor + "Totals:" + defaultStyle)
-				fmt.Printf("  %d/%d in %s\n", totalWritten, totalAttempted, totalTime)
-				fmt.Printf("  ~%.2f succesful writes/second\n", float64(totalWritten)/totalTime.Seconds())
-
-				fmt.Println(redColor + "Stopping flood..." + defaultStyle)
-				ticker.Stop()
+				results = append(results, result)
+			case reply := <-printReport:
+				f.printReport(results, time.Since(t))
 				reply <- struct{}{}
-				fmt.Println(redColor + "...stopped" + defaultStyle)
-
 				return
 			}
 		}
 	}()
+
+	//filler
+	go func() {
+		i := 0
+		for {
+			select {
+			case inputStream <- (i % f.storeSize):
+				i++
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	//flood
+	for i := 0; i < f.concurrency; i++ {
+		go func() {
+			client := etcd.NewClient(f.machines)
+			for {
+				select {
+				case key := <-inputStream:
+					t := time.Now()
+					_, err := client.Set(fmt.Sprintf("/flood/key-%d", key), fmt.Sprintf("some-value-%s", time.Now()), 0)
+					resultChan <- FloodResult{
+						success: err == nil,
+						dt:      time.Since(t),
+					}
+				case <-stop:
+					wg.Done()
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (f *ETCDFlood) printReport(results []FloodResult, dt time.Duration) {
+	slowest := time.Duration(0)
+	fastest := time.Hour
+	nSuccess := 0
+	totalWriteTime := time.Duration(0)
+	for _, result := range results {
+		if result.dt > slowest {
+			slowest = result.dt
+		}
+		if result.dt < fastest {
+			fastest = result.dt
+		}
+		if result.success {
+			nSuccess++
+		}
+		totalWriteTime += result.dt
+	}
+
+	nAttempts := len(results)
+	CyanBanner("Report")
+	fmt.Println("")
+	fmt.Printf(cyanColor+"  Wrote %d/%d (missed %d = %.2f%%) in %s\n"+defaultStyle, nSuccess, nAttempts, nAttempts-nSuccess, float64(nAttempts-nSuccess)/float64(nAttempts)*100.0, dt)
+	fmt.Printf(cyanColor+"  That's %.2f succesful writes per second\n"+defaultStyle, float64(nSuccess)/dt.Seconds())
+	fmt.Printf(cyanColor+"  And    %.2f attempts per second\n"+defaultStyle, float64(nAttempts)/dt.Seconds())
+	fmt.Printf(cyanColor+"  Fastest write took %s\n"+defaultStyle, fastest)
+	fmt.Printf(cyanColor+"  Slowest write took %s\n"+defaultStyle, slowest)
+	fmt.Printf(cyanColor+"  Mean write took %s\n"+defaultStyle, totalWriteTime/time.Duration(nAttempts))
+	fmt.Println("")
 }
 
 func (f *ETCDFlood) Stop() {
 	if f.running {
+		fmt.Println(redColor + "Stopping flood..." + defaultStyle)
 		reply := make(chan struct{}, 0)
 		f.stop <- reply
 		<-reply
+		fmt.Println(redColor + "...stopped" + defaultStyle)
 	}
 	f.running = false
 }
@@ -118,8 +170,16 @@ func GreenBanner(s string) {
 	banner(s, greenColor)
 }
 
+func CyanBanner(s string) {
+	banner(s, cyanColor)
+}
+
 func RedBanner(s string) {
 	banner(s, redColor)
+}
+
+func YellowBanner(s string) {
+	banner(s, yellowColor)
 }
 
 func banner(s string, color string) {

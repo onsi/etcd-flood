@@ -30,13 +30,13 @@ var toShutDown []*gexec.Session
 var flood *ETCDFlood
 
 var VERSION string
-var NUM_KEYS int
+var STORE_SIZE int
 var CONCURRENCY int
 
 func init() {
-	flag.StringVar(&VERSION, "version", V46, "version to test: v0.3, v0.4.6, vbeta")
-	flag.IntVar(&NUM_KEYS, "numKeys", 1000, "number of keys to write per batch")
-	flag.IntVar(&CONCURRENCY, "concurrency", 50, "number of concurrent requests")
+	flag.StringVar(&VERSION, "version", VBETA, "version to test: v0.3, v0.4.6, vbeta")
+	flag.IntVar(&STORE_SIZE, "storeSize", 30000, "total number of keys to put in the store")
+	flag.IntVar(&CONCURRENCY, "concurrency", 300, "number of concurrent requests")
 }
 
 func TestEtcdFlood(t *testing.T) {
