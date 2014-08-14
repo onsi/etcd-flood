@@ -1,6 +1,6 @@
 # ETCD Flood
 
-A Ginkgo test suite that spins up an etcd cluster, writes to it mercilessly, and then goes through a variety of excercises tearing down etcd nodes.
+A Ginkgo test suite that spins up an etcd cluster, writes to it and reads from it mercilessly, and then goes through a variety of excercises tearing down etcd nodes.
 
 Currently, there are 5 tests:
 
@@ -49,19 +49,25 @@ where `VERSION` is one of `v0.3`, `v0.4.6`, or `vbeta` -- `vbeta` runs against [
 
 ## What the flood does
 
-The flood spins up `CONCURRENCY` goroutines that write to the etcd cluster in a tight loop.  The flood writes and maintains `STORE_SIZE` keys in etcd.  To be clear: the flood does *not* fill etcd up with keys, rather it fills it up to `STORE_SIZE` keys and then constantly overwrites those keys.
+The flood spins up `WRITERS` concurrent writers that write to the etcd cluster in a tight loop.  The flood writes and maintains `STORE_SIZE` keys in etcd.  To be clear: the flood does *not* fill etcd up with keys, rather it fills it up to `STORE_SIZE` keys and then constantly overwrites those keys.
 
-The default values are `CONCURRENCY = 300` and `STORE_SIZE = 30000`.  These can be modified via:
+The flood will also *read* from the store.  There are two types of concurrent reads peformed.  The flood will spawn `LIGHT_READERS` readers that each read a single key from the store.  It will also spawn `HEAVY_READERS` readers that fetch the entire contents of the store.  Readers pause for 10ms between reads.
+
+
+The default values are `WRITERS = 300`, `HEAVY_READERS = 5`, `LIGHT_READERS = 20` and `STORE_SIZE = 30000`.  These can be modified via:
 
 ```
-ginkgo -v -- -concurrency=CONCURRENCY -storeSize=STORE_SIZE
+ginkgo -v -- -writers=WRITERS -heavyReaders=HEAVY_REAERS -lightReaders=LIGHT_READERS -storeSize=STORE_SIZE
 ```
 
-The flood then reports stats about the run: how many writes succeeded, how many failed, how long they took, etc.  The test is allowed to succeed even if some writes fails.  The test only fails if, at the end of the run, the individual etcd nodes do not each report `30000` elements.
+The flood then reports stats about the run: how many writes/reads succeeded, how many failed, how long they took, etc.  The test is allowed to succeed even if some writes fails.  The test only fails if, at the end of the run, the individual etcd nodes do not each report `30000` elements.
 
 ## Results
 
-With a `CONCURRENCY` of 300 and `STORE_SIZE` of 30000 I generally see the happy-path test maintain `~5000 writes/second` on a 3.4 GHz i7 iMac.
+With these default values I generally see the happy-path test maintain `~2700 writes/second, ~35 heavy reads/second, 800 light reads/second` on a 3.4 GHz i7 iMac.
 
-The sad path tests generally lead to a brief window of downtime in which etcd is unavailable.  In these tests I tend to see `~0.5%` of writes fail and for the write rate to drop to `~4000 writes/second` with the slowest individual writes taking on the order of seconds.
+The sad path tests generally lead to a brief window of downtime in which etcd is unavailable.
 
+## `etcd-flood`
+
+`go get github.com/onsi/etcd-flood` also builds an `etcd-flood` binary that can be used to launch an etcd flood.  It has similar CLI flags as the test suite.

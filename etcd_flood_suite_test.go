@@ -1,4 +1,4 @@
-package etcd_flood_test
+package main_test
 
 import (
 	"encoding/json"
@@ -8,10 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/coreos/go-etcd/etcd"
-	. "github.com/onsi/etcd-flood"
+	"github.com/onsi/etcd-flood/flood"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
@@ -27,16 +28,22 @@ const VBETA = "vbeta"
 const DATA_DIR = "./data-dir"
 
 var toShutDown []*gexec.Session
-var flood *ETCDFlood
+var etcdFlood *flood.Flood
 
 var VERSION string
 var STORE_SIZE int
-var CONCURRENCY int
+var WRITERS int
+var HEAVY_READERS int
+var LIGHT_READERS int
+var WATCHERS int
 
 func init() {
 	flag.StringVar(&VERSION, "version", VBETA, "version to test: v0.3, v0.4.6, vbeta")
 	flag.IntVar(&STORE_SIZE, "storeSize", 30000, "total number of keys to put in the store")
-	flag.IntVar(&CONCURRENCY, "concurrency", 300, "number of concurrent requests")
+	flag.IntVar(&WRITERS, "writers", 300, "number of concurrent writers")
+	flag.IntVar(&HEAVY_READERS, "heavyReaders", 5, "number of concurrent readers that fetch the entire store")
+	flag.IntVar(&LIGHT_READERS, "lightReaders", 20, "number of concurrent readers that fetch a key at a time")
+	flag.IntVar(&WATCHERS, "watchers", 0, "number of concurrent watchers")
 }
 
 func TestEtcdFlood(t *testing.T) {
@@ -45,6 +52,7 @@ func TestEtcdFlood(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	runtime.GOMAXPROCS(4)
 	err := os.MkdirAll(DATA_DIR, 0700)
 	Ω(err).ShouldNot(HaveOccurred())
 	for _, version := range []string{V3, V46, VBETA} {
@@ -66,12 +74,12 @@ var _ = BeforeEach(func() {
 	Ω(err).ShouldNot(HaveOccurred())
 
 	toShutDown = []*gexec.Session{}
-	flood = nil
+	etcdFlood = nil
 })
 
 var _ = AfterEach(func() {
-	if flood != nil {
-		flood.Stop()
+	if etcdFlood != nil {
+		etcdFlood.Stop()
 	}
 
 	for _, session := range toShutDown {
@@ -145,7 +153,7 @@ func StartNode(version string, name string, dataDir string, addr string, peerAdd
 
 	cmd := exec.Command(path, args...)
 
-	GreenBanner(fmt.Sprintf("Launching etcd %s [%s] with args:\n%s", version, name, format.IndentString(strings.Join(args, "\n"), 1)))
+	flood.GreenBanner(fmt.Sprintf("Launching etcd %s [%s] with args:\n%s", version, name, format.IndentString(strings.Join(args, "\n"), 1)))
 
 	session, err := gexec.Start(cmd,
 		gexec.NewPrefixedWriter(fmt.Sprintf("[%s]", name), GinkgoWriter),
