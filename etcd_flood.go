@@ -18,20 +18,24 @@ const cyanColor = "\x1b[36m"
 type ETCDFlood struct {
 	storeSize   int
 	concurrency int
+	readers     int
+	watchers    int
 	machines    []string
 	stop        chan chan struct{}
 	running     bool
 }
 
-type FloodResult struct {
+type Result struct {
 	success bool
 	dt      time.Duration
 }
 
-func NewETCDFlood(storeSize int, concurrency int, machines []string) *ETCDFlood {
+func NewETCDFlood(storeSize int, concurrency int, readers int, watchers int, machines []string) *ETCDFlood {
 	return &ETCDFlood{
 		storeSize:   storeSize,
 		concurrency: concurrency,
+		readers:     readers,
+		watchers:    watchers,
 		machines:    machines,
 		stop:        make(chan chan struct{}, 0),
 	}
@@ -41,12 +45,13 @@ func (f *ETCDFlood) Flood() {
 	f.running = true
 
 	wg := &sync.WaitGroup{}
-	wg.Add(f.concurrency)
+	wg.Add(f.concurrency + f.readers + f.watchers)
 
 	stop := make(chan struct{})
 	inputStream := make(chan int)
 
-	resultChan := make(chan FloodResult)
+	floodResultChan := make(chan Result)
+	readResultChan := make(chan Result)
 	printReport := make(chan chan struct{}, 0)
 
 	//stopper
@@ -59,31 +64,54 @@ func (f *ETCDFlood) Flood() {
 
 	//result aggregator
 	go func() {
-		results := []FloodResult{}
-		nSuccess := 0
-		nAttempted := 0
-		lastCount := 0
+		floodResults := []Result{}
+		readResults := []Result{}
+
+		nSuccessfulFloods := 0
+		nAttemptedFloods := 0
+		lastWriteCount := 0
+
+		nSuccesfulReads := 0
+		nAttemptedReads := 0
+		lastReadCount := 0
+
 		t := time.Now()
 		for {
 			select {
-			case result := <-resultChan:
+			case result := <-floodResultChan:
 				if result.success {
-					nSuccess += 1
+					nSuccessfulFloods += 1
 				}
-				nAttempted += 1
-				if nAttempted%1000 == 0 {
-					delta := nSuccess - lastCount
-					update := fmt.Sprintf("Wrote %d/%d in %s (∆=%d/1000)", nSuccess, nAttempted, time.Since(t), nSuccess-lastCount)
+				nAttemptedFloods += 1
+				if nAttemptedFloods%1000 == 0 {
+					delta := nSuccessfulFloods - lastWriteCount
+					update := fmt.Sprintf("WROTE %d/%d in %s (∆=%d/1000)", nSuccessfulFloods, nAttemptedFloods, time.Since(t), nSuccessfulFloods-lastWriteCount)
 					if delta == 1000 {
 						fmt.Println(greenColor + update + defaultStyle)
 					} else {
 						fmt.Println(redColor + update + defaultStyle)
 					}
-					lastCount = nSuccess
+					lastWriteCount = nSuccessfulFloods
 				}
-				results = append(results, result)
+				floodResults = append(floodResults, result)
+			case result := <-readResultChan:
+				if result.success {
+					nSuccesfulReads += 1
+				}
+				nAttemptedReads += 1
+				if nAttemptedReads%100 == 0 {
+					delta := nSuccesfulReads - lastReadCount
+					update := fmt.Sprintf("READ %d/%d in %s (∆=%d/100)", nSuccesfulReads, nAttemptedReads, time.Since(t), nSuccesfulReads-lastReadCount)
+					if delta == 100 {
+						fmt.Println(greenColor + update + defaultStyle)
+					} else {
+						fmt.Println(redColor + update + defaultStyle)
+					}
+					lastReadCount = nSuccesfulReads
+				}
+				readResults = append(readResults, result)
 			case reply := <-printReport:
-				f.printReport(results, time.Since(t))
+				f.printReport(floodResults, readResults, time.Since(t))
 				reply <- struct{}{}
 				return
 			}
@@ -112,7 +140,7 @@ func (f *ETCDFlood) Flood() {
 				case key := <-inputStream:
 					t := time.Now()
 					_, err := client.Set(fmt.Sprintf("/flood/key-%d", key), fmt.Sprintf("some-value-%s", time.Now()), 0)
-					resultChan <- FloodResult{
+					floodResultChan <- Result{
 						success: err == nil,
 						dt:      time.Since(t),
 					}
@@ -123,14 +151,39 @@ func (f *ETCDFlood) Flood() {
 			}
 		}()
 	}
+
+	//readers
+	for i := 0; i < f.readers; i++ {
+		go func() {
+			client := etcd.NewClient(f.machines)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			for {
+				select {
+				case <-ticker.C:
+					t := time.Now()
+					_, err := client.Get("/flood", false, true)
+					readResultChan <- Result{
+						success: err == nil,
+						dt:      time.Since(t),
+					}
+				case <-stop:
+					ticker.Stop()
+					wg.Done()
+					return
+				}
+			}
+		}()
+	}
+
 }
 
-func (f *ETCDFlood) printReport(results []FloodResult, dt time.Duration) {
+func (f *ETCDFlood) printReport(floodResults []Result, readResults []Result, dt time.Duration) {
+	f.printSubReport("Write", "Wrote", "writes", "write", floodResults, dt)
 	slowest := time.Duration(0)
 	fastest := time.Hour
 	nSuccess := 0
 	totalWriteTime := time.Duration(0)
-	for _, result := range results {
+	for _, result := range floodResults {
 		if result.dt > slowest {
 			slowest = result.dt
 		}
@@ -143,7 +196,7 @@ func (f *ETCDFlood) printReport(results []FloodResult, dt time.Duration) {
 		totalWriteTime += result.dt
 	}
 
-	nAttempts := len(results)
+	nAttempts := len(floodResults)
 	CyanBanner("Report")
 	fmt.Println("")
 	fmt.Printf(cyanColor+"  Wrote %d/%d (missed %d = %.2f%%) in %s\n"+defaultStyle, nSuccess, nAttempts, nAttempts-nSuccess, float64(nAttempts-nSuccess)/float64(nAttempts)*100.0, dt)
@@ -153,6 +206,10 @@ func (f *ETCDFlood) printReport(results []FloodResult, dt time.Duration) {
 	fmt.Printf(cyanColor+"  Slowest write took %s\n"+defaultStyle, slowest)
 	fmt.Printf(cyanColor+"  Mean write took %s\n"+defaultStyle, totalWriteTime/time.Duration(nAttempts))
 	fmt.Println("")
+}
+
+func (f *ETCDFlood) printSubReport(floodResults []Result, readResults []Result, dt time.Duration) {
+	//HERE!
 }
 
 func (f *ETCDFlood) Stop() {
