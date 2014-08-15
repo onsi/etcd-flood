@@ -30,6 +30,65 @@ type Result struct {
 	dt      time.Duration
 }
 
+type ResultAggregator struct {
+	NSuccesful, NAttempted, LastCount                   int
+	ReportName, PastTenseVerb, SingularNoun, PluralNoun string
+	Results                                             []Result
+	StartTime                                           time.Time
+	UpdateThreshold                                     int
+}
+
+func (r *ResultAggregator) AppendResult(result Result) {
+	if result.success {
+		r.NSuccesful += 1
+	}
+	r.NAttempted += 1
+	if r.NAttempted%r.UpdateThreshold == 0 {
+		delta := r.NSuccesful - r.LastCount
+		update := fmt.Sprintf("%s %d/%d in %s (∆=%d/%d)", r.PastTenseVerb, r.NSuccesful, r.NAttempted, time.Since(r.StartTime), r.NSuccesful-r.LastCount, r.UpdateThreshold)
+		if delta == r.UpdateThreshold {
+			fmt.Println(greenColor + update + defaultStyle)
+		} else {
+			fmt.Println(redColor + update + defaultStyle)
+		}
+		r.LastCount = r.NSuccesful
+	}
+	r.Results = append(r.Results, result)
+}
+
+func (r ResultAggregator) PrintReport() {
+	if r.NAttempted == 0 {
+		return
+	}
+
+	dt := time.Since(r.StartTime)
+	slowest := time.Duration(0)
+	fastest := time.Hour
+	totalTime := time.Duration(0)
+	for _, result := range r.Results {
+		if result.dt > slowest {
+			slowest = result.dt
+		}
+		if result.dt < fastest {
+			fastest = result.dt
+		}
+		totalTime += result.dt
+	}
+
+	numFailed := r.NAttempted - r.NSuccesful
+	fractionFailed := float64(numFailed) / float64(r.NAttempted) * 100.0
+
+	CyanBanner(r.ReportName)
+	fmt.Println("")
+	fmt.Printf(cyanColor+"  %s %d/%d (missed %d = %.2f%%) in %s\n"+defaultStyle, r.PastTenseVerb, r.NSuccesful, r.NAttempted, numFailed, fractionFailed, dt)
+	fmt.Printf(cyanColor+"  That's %.2f succesful %s per second\n"+defaultStyle, float64(r.NSuccesful)/dt.Seconds(), r.PluralNoun)
+	fmt.Printf(cyanColor+"  And    %.2f attempts per second\n"+defaultStyle, float64(r.NAttempted)/dt.Seconds())
+	fmt.Printf(cyanColor+"  Fastest %s took %s\n"+defaultStyle, r.SingularNoun, fastest)
+	fmt.Printf(cyanColor+"  Slowest %s took %s\n"+defaultStyle, r.SingularNoun, slowest)
+	fmt.Printf(cyanColor+"  Mean %s took %s\n"+defaultStyle, r.SingularNoun, totalTime/time.Duration(r.NAttempted))
+	fmt.Println("")
+}
+
 func NewETCDFlood(storeSize int, concurrency int, readers int, watchers int, machines []string) *ETCDFlood {
 	return &ETCDFlood{
 		storeSize:   storeSize,
@@ -52,6 +111,7 @@ func (f *ETCDFlood) Flood() {
 
 	floodResultChan := make(chan Result)
 	readResultChan := make(chan Result)
+	watchResultChan := make(chan Result)
 	printReport := make(chan chan struct{}, 0)
 
 	//stopper
@@ -64,54 +124,45 @@ func (f *ETCDFlood) Flood() {
 
 	//result aggregator
 	go func() {
-		floodResults := []Result{}
-		readResults := []Result{}
+		floodAggregator := &ResultAggregator{
+			ReportName:      "Write Report",
+			PastTenseVerb:   "Wrote",
+			SingularNoun:    "write",
+			PluralNoun:      "writes",
+			StartTime:       time.Now(),
+			UpdateThreshold: 1000,
+		}
 
-		nSuccessfulFloods := 0
-		nAttemptedFloods := 0
-		lastWriteCount := 0
+		readAggregator := &ResultAggregator{
+			ReportName:      "Read Report",
+			PastTenseVerb:   "Read",
+			SingularNoun:    "read",
+			PluralNoun:      "reads",
+			StartTime:       time.Now(),
+			UpdateThreshold: 100,
+		}
 
-		nSuccesfulReads := 0
-		nAttemptedReads := 0
-		lastReadCount := 0
+		watchAggregator := &ResultAggregator{
+			ReportName:      "Watch Report",
+			PastTenseVerb:   "Watch",
+			SingularNoun:    "watch",
+			PluralNoun:      "watches",
+			StartTime:       time.Now(),
+			UpdateThreshold: 1000,
+		}
 
-		t := time.Now()
 		for {
 			select {
 			case result := <-floodResultChan:
-				if result.success {
-					nSuccessfulFloods += 1
-				}
-				nAttemptedFloods += 1
-				if nAttemptedFloods%1000 == 0 {
-					delta := nSuccessfulFloods - lastWriteCount
-					update := fmt.Sprintf("WROTE %d/%d in %s (∆=%d/1000)", nSuccessfulFloods, nAttemptedFloods, time.Since(t), nSuccessfulFloods-lastWriteCount)
-					if delta == 1000 {
-						fmt.Println(greenColor + update + defaultStyle)
-					} else {
-						fmt.Println(redColor + update + defaultStyle)
-					}
-					lastWriteCount = nSuccessfulFloods
-				}
-				floodResults = append(floodResults, result)
+				floodAggregator.AppendResult(result)
 			case result := <-readResultChan:
-				if result.success {
-					nSuccesfulReads += 1
-				}
-				nAttemptedReads += 1
-				if nAttemptedReads%100 == 0 {
-					delta := nSuccesfulReads - lastReadCount
-					update := fmt.Sprintf("READ %d/%d in %s (∆=%d/100)", nSuccesfulReads, nAttemptedReads, time.Since(t), nSuccesfulReads-lastReadCount)
-					if delta == 100 {
-						fmt.Println(greenColor + update + defaultStyle)
-					} else {
-						fmt.Println(redColor + update + defaultStyle)
-					}
-					lastReadCount = nSuccesfulReads
-				}
-				readResults = append(readResults, result)
+				readAggregator.AppendResult(result)
+			case result := <-watchResultChan:
+				watchAggregator.AppendResult(result)
 			case reply := <-printReport:
-				f.printReport(floodResults, readResults, time.Since(t))
+				floodAggregator.PrintReport()
+				readAggregator.PrintReport()
+				watchAggregator.PrintReport()
 				reply <- struct{}{}
 				return
 			}
@@ -156,6 +207,7 @@ func (f *ETCDFlood) Flood() {
 	for i := 0; i < f.readers; i++ {
 		go func() {
 			client := etcd.NewClient(f.machines)
+			client.SetConsistency(etcd.WEAK_CONSISTENCY)
 			ticker := time.NewTicker(10 * time.Millisecond)
 			for {
 				select {
@@ -175,41 +227,35 @@ func (f *ETCDFlood) Flood() {
 		}()
 	}
 
-}
-
-func (f *ETCDFlood) printReport(floodResults []Result, readResults []Result, dt time.Duration) {
-	f.printSubReport("Write", "Wrote", "writes", "write", floodResults, dt)
-	slowest := time.Duration(0)
-	fastest := time.Hour
-	nSuccess := 0
-	totalWriteTime := time.Duration(0)
-	for _, result := range floodResults {
-		if result.dt > slowest {
-			slowest = result.dt
-		}
-		if result.dt < fastest {
-			fastest = result.dt
-		}
-		if result.success {
-			nSuccess++
-		}
-		totalWriteTime += result.dt
+	//watchers
+	for i := 0; i < f.watchers; i++ {
+		go func() {
+			client := etcd.NewClient(f.machines)
+			var stopChan = make(chan bool)
+			var receiver = make(chan *etcd.Response)
+			client.Watch("/flood", 0, true, receiver, stopChan)
+			t := time.Now()
+			for {
+				select {
+				case _, ok := <-receiver:
+					watchResultChan <- Result{
+						success: ok,
+						dt:      time.Since(t),
+					}
+					t = time.Now()
+					if !ok {
+						stopChan = make(chan bool)
+						receiver = make(chan *etcd.Response)
+						client.Watch("/flood", 0, true, receiver, stopChan)
+					}
+				case <-stop:
+					stopChan <- true
+					wg.Done()
+					return
+				}
+			}
+		}()
 	}
-
-	nAttempts := len(floodResults)
-	CyanBanner("Report")
-	fmt.Println("")
-	fmt.Printf(cyanColor+"  Wrote %d/%d (missed %d = %.2f%%) in %s\n"+defaultStyle, nSuccess, nAttempts, nAttempts-nSuccess, float64(nAttempts-nSuccess)/float64(nAttempts)*100.0, dt)
-	fmt.Printf(cyanColor+"  That's %.2f succesful writes per second\n"+defaultStyle, float64(nSuccess)/dt.Seconds())
-	fmt.Printf(cyanColor+"  And    %.2f attempts per second\n"+defaultStyle, float64(nAttempts)/dt.Seconds())
-	fmt.Printf(cyanColor+"  Fastest write took %s\n"+defaultStyle, fastest)
-	fmt.Printf(cyanColor+"  Slowest write took %s\n"+defaultStyle, slowest)
-	fmt.Printf(cyanColor+"  Mean write took %s\n"+defaultStyle, totalWriteTime/time.Duration(nAttempts))
-	fmt.Println("")
-}
-
-func (f *ETCDFlood) printSubReport(floodResults []Result, readResults []Result, dt time.Duration) {
-	//HERE!
 }
 
 func (f *ETCDFlood) Stop() {
