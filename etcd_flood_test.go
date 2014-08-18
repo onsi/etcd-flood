@@ -18,7 +18,7 @@ var _ = Describe("When rolling etcd", func() {
 		node1 = StartNode(VERSION, Name(1), DataDir(1, true), Addr(1), PeerAddr(1), Peers(0, 2), "-snapshot-count=1000")
 		node2 = StartNode(VERSION, Name(2), DataDir(2, true), Addr(2), PeerAddr(2), Peers(0, 1), "-snapshot-count=1000")
 
-		flood = NewETCDFlood(STORE_SIZE, CONCURRENCY, READERS, WATCHERS, Machines(0, 1, 2))
+		flood = NewETCDFlood(STORE_SIZE, CONCURRENCY, HEAVY_READERS, LIGHT_READERS, WATCHERS, Machines(0, 1, 2))
 		flood.Flood()
 		time.Sleep(10 * time.Second)
 	})

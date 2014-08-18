@@ -16,13 +16,14 @@ const yellowColor = "\x1b[33m"
 const cyanColor = "\x1b[36m"
 
 type ETCDFlood struct {
-	storeSize   int
-	concurrency int
-	readers     int
-	watchers    int
-	machines    []string
-	stop        chan chan struct{}
-	running     bool
+	storeSize    int
+	concurrency  int
+	heavyReaders int
+	lightReaders int
+	watchers     int
+	machines     []string
+	stop         chan chan struct{}
+	running      bool
 }
 
 type Result struct {
@@ -89,14 +90,15 @@ func (r ResultAggregator) PrintReport() {
 	fmt.Println("")
 }
 
-func NewETCDFlood(storeSize int, concurrency int, readers int, watchers int, machines []string) *ETCDFlood {
+func NewETCDFlood(storeSize int, concurrency int, heavyReaders int, lightReaders int, watchers int, machines []string) *ETCDFlood {
 	return &ETCDFlood{
-		storeSize:   storeSize,
-		concurrency: concurrency,
-		readers:     readers,
-		watchers:    watchers,
-		machines:    machines,
-		stop:        make(chan chan struct{}, 0),
+		storeSize:    storeSize,
+		concurrency:  concurrency,
+		heavyReaders: heavyReaders,
+		lightReaders: lightReaders,
+		watchers:     watchers,
+		machines:     machines,
+		stop:         make(chan chan struct{}, 0),
 	}
 }
 
@@ -104,13 +106,14 @@ func (f *ETCDFlood) Flood() {
 	f.running = true
 
 	wg := &sync.WaitGroup{}
-	wg.Add(f.concurrency + f.readers + f.watchers)
+	wg.Add(f.concurrency + f.heavyReaders + f.lightReaders + f.watchers)
 
 	stop := make(chan struct{})
 	inputStream := make(chan int)
 
 	floodResultChan := make(chan Result)
-	readResultChan := make(chan Result)
+	heavyReadResultChan := make(chan Result)
+	lightReadResultChan := make(chan Result)
 	watchResultChan := make(chan Result)
 	printReport := make(chan chan struct{}, 0)
 
@@ -133,13 +136,22 @@ func (f *ETCDFlood) Flood() {
 			UpdateThreshold: 1000,
 		}
 
-		readAggregator := &ResultAggregator{
-			ReportName:      "Read Report",
-			PastTenseVerb:   "Read",
-			SingularNoun:    "read",
-			PluralNoun:      "reads",
+		heavyReadAggregator := &ResultAggregator{
+			ReportName:      "Heavy Read Report",
+			PastTenseVerb:   "(Heavy) Read",
+			SingularNoun:    "heavy read",
+			PluralNoun:      "heavy reads",
 			StartTime:       time.Now(),
 			UpdateThreshold: 100,
+		}
+
+		lightReadAggregator := &ResultAggregator{
+			ReportName:      "Light Read Report",
+			PastTenseVerb:   "(Light) Read",
+			SingularNoun:    "light read",
+			PluralNoun:      "light reads",
+			StartTime:       time.Now(),
+			UpdateThreshold: 1000,
 		}
 
 		watchAggregator := &ResultAggregator{
@@ -155,13 +167,16 @@ func (f *ETCDFlood) Flood() {
 			select {
 			case result := <-floodResultChan:
 				floodAggregator.AppendResult(result)
-			case result := <-readResultChan:
-				readAggregator.AppendResult(result)
+			case result := <-heavyReadResultChan:
+				heavyReadAggregator.AppendResult(result)
+			case result := <-lightReadResultChan:
+				lightReadAggregator.AppendResult(result)
 			case result := <-watchResultChan:
 				watchAggregator.AppendResult(result)
 			case reply := <-printReport:
 				floodAggregator.PrintReport()
-				readAggregator.PrintReport()
+				heavyReadAggregator.PrintReport()
+				lightReadAggregator.PrintReport()
 				watchAggregator.PrintReport()
 				reply <- struct{}{}
 				return
@@ -203,8 +218,8 @@ func (f *ETCDFlood) Flood() {
 		}()
 	}
 
-	//readers
-	for i := 0; i < f.readers; i++ {
+	//heavy readers
+	for i := 0; i < f.heavyReaders; i++ {
 		go func() {
 			client := etcd.NewClient(f.machines)
 			client.SetConsistency(etcd.WEAK_CONSISTENCY)
@@ -214,8 +229,39 @@ func (f *ETCDFlood) Flood() {
 				case <-ticker.C:
 					t := time.Now()
 					_, err := client.Get("/flood", false, true)
-					readResultChan <- Result{
+					heavyReadResultChan <- Result{
 						success: err == nil,
+						dt:      time.Since(t),
+					}
+				case <-stop:
+					ticker.Stop()
+					wg.Done()
+					return
+				}
+			}
+		}()
+	}
+
+	//light readers
+	storeSize := f.storeSize
+	for i := 0; i < f.lightReaders; i++ {
+		go func() {
+			client := etcd.NewClient(f.machines)
+			client.SetConsistency(etcd.WEAK_CONSISTENCY)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			key := 0
+			for {
+				select {
+				case <-ticker.C:
+					t := time.Now()
+					_, err := client.Get(fmt.Sprintf("/flood/key-%d", key%(storeSize/100)), false, true)
+					key++
+					success := err == nil
+					if !success {
+						success = err.(*etcd.EtcdError).ErrorCode == 100
+					}
+					lightReadResultChan <- Result{
+						success: success,
 						dt:      time.Since(t),
 					}
 				case <-stop:

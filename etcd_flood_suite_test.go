@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/coreos/go-etcd/etcd"
@@ -32,14 +33,16 @@ var flood *ETCDFlood
 var VERSION string
 var STORE_SIZE int
 var CONCURRENCY int
-var READERS int
+var HEAVY_READERS int
+var LIGHT_READERS int
 var WATCHERS int
 
 func init() {
 	flag.StringVar(&VERSION, "version", VBETA, "version to test: v0.3, v0.4.6, vbeta")
 	flag.IntVar(&STORE_SIZE, "storeSize", 30000, "total number of keys to put in the store")
 	flag.IntVar(&CONCURRENCY, "concurrency", 300, "number of concurrent requests")
-	flag.IntVar(&READERS, "readers", 2, "number of concurrent readers")
+	flag.IntVar(&HEAVY_READERS, "heavyReaders", 2, "number of concurrent readers that fetch the entire store")
+	flag.IntVar(&LIGHT_READERS, "lightReaders", 50, "number of concurrent readers that fetch a key at a time")
 	flag.IntVar(&WATCHERS, "watchers", 0, "number of concurrent watchers")
 }
 
@@ -49,6 +52,7 @@ func TestEtcdFlood(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	runtime.GOMAXPROCS(4)
 	err := os.MkdirAll(DATA_DIR, 0700)
 	Ω(err).ShouldNot(HaveOccurred())
 	for _, version := range []string{V3, V46, VBETA} {
