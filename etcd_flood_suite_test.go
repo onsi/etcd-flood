@@ -138,8 +138,12 @@ func StartNode(version string, name string, dataDir string, addr string, peerAdd
 		fmt.Sprintf("-addr=%s", addr),
 		fmt.Sprintf("-peer-addr=%s", peerAddr),
 		fmt.Sprintf("-data-dir=%s", dataDir),
-		"-peer-heartbeat-timeout=50",
 		"-peer-election-timeout=1000",
+	}
+	if version == V3 {
+		args = append(args, "--peer-heartbeat-timeout=50")
+	} else {
+		args = append(args, "--peer-heartbeat-interval=50")
 	}
 
 	if len(peers) > 0 {
