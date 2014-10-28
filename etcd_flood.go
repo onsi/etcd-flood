@@ -258,7 +258,10 @@ func (f *ETCDFlood) Flood() {
 					key++
 					success := err == nil
 					if !success {
-						success = err.(*etcd.EtcdError).ErrorCode == 100
+						etcdErr, ok := err.(*etcd.EtcdError)
+						if ok {
+							success = etcdErr.ErrorCode == 100
+						}
 					}
 					lightReadResultChan <- Result{
 						success: success,

@@ -24,7 +24,7 @@ import (
 
 const V3 = "v0.3"
 const V46 = "v0.4.6"
-const VBETA = "vbeta"
+const V5 = "v0.5"
 const DATA_DIR = "./data-dir"
 
 var toShutDown []*gexec.Session
@@ -38,7 +38,7 @@ var LIGHT_READERS int
 var WATCHERS int
 
 func init() {
-	flag.StringVar(&VERSION, "version", VBETA, "version to test: v0.3, v0.4.6, vbeta")
+	flag.StringVar(&VERSION, "version", V5, "version to test: v0.3, v0.4.6, v0.5")
 	flag.IntVar(&STORE_SIZE, "storeSize", 30000, "total number of keys to put in the store")
 	flag.IntVar(&CONCURRENCY, "concurrency", 300, "number of concurrent requests")
 	flag.IntVar(&HEAVY_READERS, "heavyReaders", 2, "number of concurrent readers that fetch the entire store")
@@ -55,7 +55,7 @@ var _ = BeforeSuite(func() {
 	runtime.GOMAXPROCS(4)
 	err := os.MkdirAll(DATA_DIR, 0700)
 	Ω(err).ShouldNot(HaveOccurred())
-	for _, version := range []string{V3, V46, VBETA} {
+	for _, version := range []string{V3, V46, V5} {
 		dir, err := filepath.Abs(filepath.Join("etcd", version))
 		Ω(err).ShouldNot(HaveOccurred())
 
@@ -104,6 +104,14 @@ func PeerAddr(node int) string {
 	return fmt.Sprintf("127.0.0.1:%d", 7001+node)
 }
 
+func AddrV5(node int) string {
+	return fmt.Sprintf("127.0.0.1:%d", 2379+10*node)
+}
+
+func PeerAddrV5(node int) string {
+	return fmt.Sprintf("127.0.0.1:%d", 2380+10*node)
+}
+
 func Name(node int) string {
 	return fmt.Sprintf("node-%d", node)
 }
@@ -132,18 +140,43 @@ func Peers(nodes ...int) []string {
 	return peerAddrs
 }
 
-func StartNode(version string, name string, dataDir string, addr string, peerAddr string, peers []string, extraArgs ...string) *gexec.Session {
-	args := []string{
-		fmt.Sprintf("-name=%s", name),
-		fmt.Sprintf("-addr=%s", addr),
-		fmt.Sprintf("-peer-addr=%s", peerAddr),
-		fmt.Sprintf("-data-dir=%s", dataDir),
-		"-peer-heartbeat-timeout=50",
-		"-peer-election-timeout=1000",
-	}
+func StartNode(version string, clusterSize int, memberIndex int, dataDir string, extraArgs ...string) *gexec.Session {
+	var args []string
+	if version == V5 {
+		peers := []string{}
+		for i := 0; i < clusterSize; i++ {
+			peers = append(peers, fmt.Sprintf("%s=http://%s", Name(i), PeerAddr(i)))
+		}
+		args = []string{
+			fmt.Sprintf("-name=%s", Name(memberIndex)),
+			fmt.Sprintf("-advertise-client-urls=http://%s", Addr(memberIndex)),
+			fmt.Sprintf("-listen-client-urls=http://%s", Addr(memberIndex)),
+			fmt.Sprintf("-listen-peer-urls=http://%s", PeerAddr(memberIndex)),
+			fmt.Sprintf("-initial-advertise-peer-urls=http://%s", PeerAddr(memberIndex)),
+			fmt.Sprintf("-initial-cluster=%s", strings.Join(peers, ",")),
+			fmt.Sprintf("-data-dir=%s", dataDir),
+			"-initial-cluster-state=new",
+		}
+	} else {
+		args = []string{
+			fmt.Sprintf("-name=%s", Name(memberIndex)),
+			fmt.Sprintf("-addr=%s", Addr(memberIndex)),
+			fmt.Sprintf("-peer-addr=%s", PeerAddr(memberIndex)),
+			fmt.Sprintf("-data-dir=%s", dataDir),
+			"-peer-heartbeat-timeout=50",
+			"-peer-election-timeout=1000",
+		}
 
-	if len(peers) > 0 {
-		args = append(args, fmt.Sprintf("-peers=%s", strings.Join(peers, ",")))
+		if memberIndex > 0 && clusterSize > 1 {
+			cluster := []int{}
+			for i := 0; i < clusterSize; i++ {
+				if i != memberIndex {
+					cluster = append(cluster, i)
+				}
+			}
+
+			args = append(args, fmt.Sprintf("-peers=%s", strings.Join(Peers(cluster...), ",")))
+		}
 	}
 
 	args = append(args, extraArgs...)
@@ -153,15 +186,15 @@ func StartNode(version string, name string, dataDir string, addr string, peerAdd
 
 	cmd := exec.Command(path, args...)
 
-	GreenBanner(fmt.Sprintf("Launching etcd %s [%s] with args:\n%s", version, name, format.IndentString(strings.Join(args, "\n"), 1)))
+	GreenBanner(fmt.Sprintf("Launching etcd %s [%s] with args:\n%s", version, Name(memberIndex), format.IndentString(strings.Join(args, "\n"), 1)))
 
 	session, err := gexec.Start(cmd,
-		gexec.NewPrefixedWriter(fmt.Sprintf("[%s]", name), GinkgoWriter),
-		gexec.NewPrefixedWriter(fmt.Sprintf("[%s]", name), GinkgoWriter))
+		gexec.NewPrefixedWriter(fmt.Sprintf("[%s]", Name(memberIndex)), GinkgoWriter),
+		gexec.NewPrefixedWriter(fmt.Sprintf("[%s]", Name(memberIndex)), GinkgoWriter))
 	Ω(err).ShouldNot(HaveOccurred())
 	toShutDown = append(toShutDown, session)
 
-	WaitFor(addr)
+	WaitFor(Addr(memberIndex))
 
 	return session
 }
