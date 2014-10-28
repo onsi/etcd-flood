@@ -8,9 +8,8 @@ Currently, there are 5 tests:
 - bring up nodes A B and C, shut A down, assert that B and C are fine
 - bring up nodes A B and C, shut A down, then bring it back.  Assert that A, B and C are fine
 - bring up nodes A B and C, shut A down, then delete its data directory, then bring it back.  Assert that A, B and C are fine
-- bring up nodes A B and C, wait for a while, start node D.  Assert that A, B, C and D are fine
 
-The last two tests sometimes fail.  When they do, etcd is often logging:
+The last test sometimes fails with v0.3 and v0.4.6.  When it does, etcd is often logging:
 
 ```
 WARNING   | [ss] Error: nil response
@@ -43,7 +42,7 @@ ginkgo -v -untilItFails
 ginkgo -v -- -version=VERSION
 ```
 
-where `VERSION` is one of `v0.3`, `v0.4.6`, or `vbeta` -- `vbeta` runs against [#877b3d](https://github.com/etcd-team/etcd) of the `etcd-team` fork of `etcd` and has the new raft code.
+where `VERSION` is one of `v0.3`, `v0.4.6`, or `v0.5`
 
 `VERSION` defaults to `vbeta`.
 
