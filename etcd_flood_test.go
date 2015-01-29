@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"time"
 
 	"github.com/onsi/etcd-flood/flood"
@@ -50,25 +49,6 @@ var _ = Describe("When rolling etcd", func() {
 
 		flood.YellowBanner("restarting node 0...")
 		node0 = StartNode(VERSION, 3, 0, DataDir(0, false), "-snapshot-count=1000")
-		time.Sleep(5 * time.Second)
-
-		flood.YellowBanner("checking...")
-		Ω(KeysOnNode(0)).Should(Equal(STORE_SIZE))
-		Ω(KeysOnNode(1)).Should(Equal(STORE_SIZE))
-		Ω(KeysOnNode(2)).Should(Equal(STORE_SIZE))
-	})
-
-	It("should work when the first node comes back to an empty directory", func() {
-		flood.YellowBanner("shutting down node 0")
-		node0.Interrupt().Wait()
-		time.Sleep(5 * time.Second)
-
-		flood.YellowBanner("removing data directory")
-		err := os.RemoveAll(DataDir(0, false))
-		Ω(err).ShouldNot(HaveOccurred())
-
-		flood.YellowBanner("restarting node 0...")
-		node0 = StartNode(VERSION, 3, 0, DataDir(0, true), "-snapshot-count=1000")
 		time.Sleep(5 * time.Second)
 
 		flood.YellowBanner("checking...")
