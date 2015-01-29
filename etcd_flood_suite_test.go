@@ -1,4 +1,4 @@
-package main_test
+package main
 
 import (
 	"encoding/json"
@@ -22,31 +22,23 @@ import (
 	"time"
 )
 
-const V3 = "v0.3"
-const V46 = "v0.4.6"
-const V5 = "v0.5"
+const V03 = "v0.3"
+const V046 = "v0.4.6"
+const V2 = "v2.0.0"
 const DATA_DIR = "./data-dir"
 
 var toShutDown []*gexec.Session
 var etcdFlood *flood.Flood
 
 var VERSION string
-var STORE_SIZE int
-var WRITERS int
-var HEAVY_READERS int
-var LIGHT_READERS int
-var WATCHERS int
 
 func init() {
-	flag.StringVar(&VERSION, "version", V5, "version to test: v0.3, v0.4.6, v0.5")
-	flag.IntVar(&STORE_SIZE, "storeSize", 30000, "total number of keys to put in the store")
-	flag.IntVar(&WRITERS, "writers", 300, "number of concurrent writers")
-	flag.IntVar(&HEAVY_READERS, "heavyReaders", 5, "number of concurrent readers that fetch the entire store")
-	flag.IntVar(&LIGHT_READERS, "lightReaders", 20, "number of concurrent readers that fetch a key at a time")
-	flag.IntVar(&WATCHERS, "watchers", 0, "number of concurrent watchers")
+	flag.StringVar(&VERSION, "version", V2, "version to test: v0.3, v0.4.6, v2.0.0")
 }
 
 func TestEtcdFlood(t *testing.T) {
+	flag.Parse()
+
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "EtcdFlood Suite")
 }
@@ -55,7 +47,7 @@ var _ = BeforeSuite(func() {
 	runtime.GOMAXPROCS(4)
 	err := os.MkdirAll(DATA_DIR, 0700)
 	Ω(err).ShouldNot(HaveOccurred())
-	for _, version := range []string{V3, V46, V5} {
+	for _, version := range []string{V03, V046, V2} {
 		dir, err := filepath.Abs(filepath.Join("etcd", version))
 		Ω(err).ShouldNot(HaveOccurred())
 
@@ -134,7 +126,7 @@ func Peers(nodes ...int) []string {
 
 func StartNode(version string, clusterSize int, memberIndex int, dataDir string, extraArgs ...string) *gexec.Session {
 	var args []string
-	if version == V5 {
+	if version == V2 {
 		peers := []string{}
 		for i := 0; i < clusterSize; i++ {
 			peers = append(peers, fmt.Sprintf("%s=http://%s", Name(i), PeerAddr(i)))
